@@ -1,6 +1,6 @@
-# BMW E87 Instrument Cluster - SimHub Integration
+# BMW E87 / E9x Instrument Cluster - SimHub Integration
 
-Transform a BMW E87 instrument cluster into a fully functional display for racing simulators!
+Transform a BMW / E9x instrument cluster into a fully functional display for racing simulators!
 
 ## Features
 

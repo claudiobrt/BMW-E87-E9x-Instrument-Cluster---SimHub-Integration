@@ -56,7 +56,7 @@ Install the required library:
 - ⚠️ NOT the MCP_CAN library - this project uses a different library!
 
 ### 2. Upload Code
-- Open `bmw_e87_cluster.ino` in Arduino IDE
+- Open `main.ino` in Arduino IDE
 - Select your board (Arduino Uno)
 - Upload to Arduino
 

@@ -28,15 +28,12 @@ Transform a BMW E87 instrument cluster into a fully functional display for racin
 
 ## Wiring
 
-### CAN Shield to Arduino
-- CS (Chip Select): Pin 9
-- INT (Interrupt): Pin 2
-
-### Cluster Connections
-- **Pin 1**: CAN-H (connect to shield CAN-H)
-- **Pin 2**: CAN-L (connect to shield CAN-L)
-- **Pin 3**: Ground (connect to common ground)
-- **Pin 4**: +12V (from power supply)
+| Cluster Pin | Connection | Description |
+|-------------|------------|-------------|
+| **Pin 6** | CAN-H | Connect to CAN Shield CAN-H |
+| **Pin 7** | CAN-L | Connect to CAN Shield CAN-L |
+| **Pin 18** | Ground | Connect to common ground |
+| **Pin 19** | +12V DC | Connect to power supply positive |
 
 ### Important: Termination Resistor
 **You MUST cut the termination resistor trace (P1) on the CAN-BUS Shield!** This is critical for proper communication with the cluster. See the [Seeed Wiki](https://wiki.seeedstudio.com/CAN-BUS_Shield_V2.0/) for details.

@@ -6,7 +6,7 @@ Transform a BMW / E9x instrument cluster into a fully functional display for rac
 
 ✅ **Working:**
 - RPM gauge with accurate engine speed
-- Speedometer (displays km/h on inner scale)
+- Speedometer
 - Fuel gauge with percentage display
 - Turn indicators with authentic BMW clicking sound
 - Headlights, high beams, and fog lights indicators

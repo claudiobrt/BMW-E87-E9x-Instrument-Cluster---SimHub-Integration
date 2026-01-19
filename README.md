@@ -72,12 +72,12 @@ Install the required library:
 ## Supported Simulators
 
 Tested and working with:
-- Euro Truck Simulator 2 (ETS2)
+- Euro Truck Simulator 2 (ETS2) 
 - American Truck Simulator (ATS)
-- Assetto Corsa
-- Assettto Corsa Rally
-- Forza Horizon
-- BeamNG
+- Assetto Corsa (only speed and rpm tested) 
+- Assettto Corsa Rally (only speed and rpm tested) 
+- Forza Horizon (only speed and rpm tested) 
+- BeamNG (only speed rpm tested)
 
 Should work with any simulator supported by SimHub.
 

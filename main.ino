@@ -1,718 +1,595 @@
 /*
- * BMW E87 Instrument Cluster - SimHub Integration
+ * BMW E87 - FINAL WORKING VERSION WITH GEAR + HANDBRAKE FILTERING
  * 
- * This code allows a BMW E87 (2006 T2036) instrument cluster to work with
- * SimHub for use in racing simulators like Euro Truck Simulator 2 and 
- * American Truck Simulator.
- * 
- * Hardware:
- * - Arduino Uno
- * - CAN-BUS Shield V2 (Seeed Studio)
- * - BMW E87 Instrument Cluster (2006 model, part T2036)
- * - 12V 5A Power Supply for cluster
- * 
- * Wiring:
- * - CAN Shield CS_PIN: 9
- * - CAN Shield IRQ_PIN: 2
- * - CAN-H and CAN-L connected to cluster
- * - Common ground between Arduino, cluster, and power supply
- * - IMPORTANT: Cut the termination resistor trace (P1) on the CAN shield
- * 
- * Library Required:
- * - CAN by Sandeep Mistry (install via Arduino Library Manager)
- *   NOT the MCP_CAN library!
- * 
- * SimHub Configuration:
- * - Baud rate: 115200
- * - Update message format: JavaScript
- * - See JavaScript code in comments below
- * 
- * Features Working:
- * - RPM gauge
- * - Speedometer (km/h on inner scale)
- * - Fuel gauge
- * - Turn indicators with sound
- * - Headlights, high beams, fog lights
- * - Handbrake warning light
- * - Ignition control (cluster on/off)
- * - Warning lights (ABS, Oil, EML, Steering) - all OFF
- * - Engine temperature (displayed on LCD)
- * 
- * Author: Community effort
- * Original inspiration: TeksuSiK/e87-cluster-simhub
- * CAN protocol reference: loopybunny.co.uk/CarPC/k_can.html
- * 
- * License: MIT
- * 
- * SimHub JavaScript (paste in Custom Serial Device):
- * 
- * var ignition = $prop('EngineIgnitionOn');
- * var engine_running = $prop('EngineStarted');
- * var lights_side = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.Parking'));
- * var lights_dip = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.BeamLow'));
- * var lights_main = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.BeamHigh'));
- * var lights_front_fog = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.Beacon'));
- * var lights_rear_fog = 0;
- * var lights_indicators;
- * var lights_indicator_left_prop = $prop('GameRawData.TruckValues.CurrentValues.LightsValues.BlinkerLeftOn');
- * var lights_indicator_right_prop = $prop('GameRawData.TruckValues.CurrentValues.LightsValues.BlinkerRightOn');
- * if (lights_indicator_left_prop && lights_indicator_right_prop) {
- *     lights_indicators = 3;
- * } else if (lights_indicator_left_prop) {
- *     lights_indicators = 1;
- * } else if (lights_indicator_right_prop) {
- *     lights_indicators = 2;
- * } else {
- *     lights_indicators = 0;
- * }
- * var rpm = $prop('Rpms');
- * var speed = $prop('SpeedKmh');
- * var currentFuel = $prop('Fuel');
- * var maxFuel = $prop('MaxFuel');
- * function calculate(current, max) {
- *     return (current / max) * 100;
- * }
- * var fuel = calculate(currentFuel, maxFuel);
- * if (isNaN(fuel)) {
- *     fuel = 0;
- * }
- * var engine_temperature = $prop('GameRawData.TruckValues.CurrentValues.DashboardValues.WaterTemperature');
- * var handbrake = Number($prop('GameRawData.TruckValues.CurrentValues.MotorValues.BrakeValues.ParkingBrake'));
- * var abs = 0;
- * var airbag = 0;
- * var seatbelt = 0;
- * var currentTime = new Date();
- * var hour = currentTime.getHours();
- * var minute = currentTime.getMinutes();
- * var second = currentTime.getSeconds();
- * var year = currentTime.getFullYear();
- * var month = currentTime.getMonth();
- * var day = currentTime.getDay();
- * return `SH;${ignition};${engine_running};${lights_side};${lights_dip};${lights_main};${lights_front_fog};${lights_rear_fog};${lights_indicators};${rpm};${speed};${fuel};${engine_temperature};${handbrake};${abs};${airbag};${seatbelt};${hour};${minute};${second};${day};${month};${year};\n`;
- * 
+ * Features:
+ * ✅ RPM, Speed, Fuel, Gears (M1-M7), Indicators
+ * ✅ Handbrake with glitch filtering
+ * ✅ Gear with glitch filtering (ignores brief N/R changes)
  */
 
 #include <CAN.h>
 
-// Macro helpers for splitting 16-bit values into high/low bytes
 #define lo8(x) (uint8_t)((x)&0xff)
 #define hi8(x) (uint8_t)(((x) >> 8) & 0xff)
 
-// CAN Shield pin configuration
-const uint8_t CS_PIN = 9;   // Chip Select pin
-const uint8_t IRQ_PIN = 2;  // Interrupt pin
+const uint8_t CS_PIN = 9;
+const uint8_t IRQ_PIN = 2;
 
-// Serial communication buffers
-String inputString = "";     // Buffer for incoming serial data
-String fields[30];          // Parsed data fields from SimHub
-int fieldCount = 0;         // Number of fields received
+String inputString = "";
+String fields[30];
+int fieldCount = 0;
 
-// ===== Vehicle State Variables =====
-// These are updated from SimHub data
-uint16_t g_rpm = 800;                    // Engine RPM
-uint16_t g_speed = 0;                    // Speed in km/h
-uint16_t g_fuel = 50;                    // Fuel percentage (0-100)
-uint8_t g_lights_indicators = 0;         // 0=off, 1=left, 2=right, 3=hazard
-uint16_t g_engine_temperature = 90;      // Engine temperature in Celsius
-bool g_handbrake = false;                // Handbrake engaged
+uint16_t g_rpm = 800;
+uint16_t g_speed = 0;
+uint16_t g_fuel = 50;
+uint8_t g_lights_indicators = 0;
+uint16_t g_engine_temperature = 90;
+uint16_t g_oil_temperature = 90;  // Oil temperature
+uint8_t g_current_gear = 1;
+char g_gear_mode = 'N';
+bool g_handbrake = false;
+bool g_ignition = false;
+bool g_engine_running = false;
+bool g_lights_side = false;
+bool g_lights_dip = false;
+bool g_lights_main = false;
+bool g_lights_front_fog = false;
+bool g_lights_rear_fog = false;
 
-// Ignition states
-bool g_ignition = false;                 // Key in ignition (position 1)
-bool g_engine_running = false;           // Engine running (position 2)
+// Time and date
+uint16_t g_time_year = 2024;
+uint8_t g_time_month = 1;
+uint8_t g_time_day = 1;
+uint8_t g_time_hour = 12;
+uint8_t g_time_minute = 0;
+uint8_t g_time_second = 0;
 
-// Light states
-bool g_lights_side = false;              // Parking/side lights
-bool g_lights_dip = false;               // Low beam headlights
-bool g_lights_main = false;              // High beam headlights
-bool g_lights_front_fog = false;         // Front fog lights
-bool g_lights_rear_fog = false;          // Rear fog lights
+// ===== GLITCH FILTER SETTINGS =====
+// Adjust these values to tune the filter delay vs stability tradeoff:
+// - Lower values = faster response but may allow some glitches through
+// - Higher values = more stable but slower to respond to real changes
+const uint32_t HANDBRAKE_FILTER_MS = 1000; // Handbrake must be stable for this long (increased to 1s)
+const uint32_t GEAR_FILTER_MS = 200;       // Gear must be stable for this long
+const uint32_t OIL_TEMP_FILTER_MS = 1000;  // Oil temp must be stable for this long
 
-// ===== Light Bit Definitions for CAN ID 0x21A =====
-#define SIDE 0x01        // Parking lights bit
-#define DIP 0x02         // Low beam bit
-#define MAIN 0x04        // High beam bit
-#define FRONT_FOG 0x10   // Front fog lights bit
-#define REAR_FOG 0x20    // Rear fog lights bit
+// Filtering for handbrake
+bool g_handbrake_raw = false;
+uint32_t g_handbrake_change_time = 0;
 
-// ===== CAN Message Functions =====
+// Filtering for gear
+uint8_t g_current_gear_raw = 1;
+char g_gear_mode_raw = 'N';
+uint32_t g_gear_change_time = 0;
 
-/*
- * CAN ID: 0x130
- * Purpose: Main ignition control and cluster wake/sleep
- * Frequency: 100ms
- * 
- * Byte 0: Ignition state
- *   0x00 = Everything off
- *   0x41 = Key in position 1 (ignition on, engine off)
- *   0x45 = Engine running (position 2)
- * Byte 1: 0x40 = Key in slot
- * Byte 2: 0x21 = Clutch/running state
- * Byte 3: 0x8F = Running state flags
- * Byte 4: Counter (increments every call)
- */
+// Filtering for oil temperature
+uint16_t g_oil_temperature_raw = 90;
+uint32_t g_oil_temp_change_time = 0;
+
+#define SIDE 0x01
+#define DIP 0x02
+#define MAIN 0x04
+#define FRONT_FOG 0x10
+#define REAR_FOG 0x20
+
+uint32_t timestamp100ms = 0;
+uint32_t timestamp200ms = 0;
+uint32_t timestamp50ms = 0;  // New faster loop for steering
+
 void sendIgnitionKeyOn() {
   static uint8_t counter = 0;
-  uint8_t byte0 = 0x00;
-  
-  if (g_engine_running) {
-    byte0 = 0x45;  // Engine running
-  } else if (g_ignition) {
-    byte0 = 0x41;  // Ignition on, engine off
-  } else {
-    byte0 = 0x00;  // Everything off
-  }
-  
+  uint8_t byte0 = g_engine_running ? 0x45 : (g_ignition ? 0x41 : 0x00);
   CAN.beginPacket(0x130);
-  CAN.write(byte0);
-  CAN.write(0x40);
-  CAN.write(0x21);
-  CAN.write(0x8F);
-  CAN.write(counter);
+  CAN.write(byte0); CAN.write(0x40); CAN.write(0x21); CAN.write(0x8F); CAN.write(counter++);
   CAN.endPacket();
-  
-  counter++;
 }
 
-/*
- * CAN ID: 0x26E
- * Purpose: Ignition position display (works with 0x130)
- * Frequency: 100ms
- * 
- * Determines what the cluster displays based on ignition state
- */
 void sendIgnitionStatus() {
   uint8_t byte0, byte1, byte2;
-  
-  if (g_engine_running) {
-    // Position 2: Engine running
-    byte0 = 0x40;
-    byte1 = 0x40;
-    byte2 = 0x7F;
-  } else if (g_ignition) {
-    // Position 1: Ignition on
-    byte0 = 0x00;
-    byte1 = 0x40;
-    byte2 = 0x7F;
-  } else {
-    // Position 0: Everything off
-    byte0 = 0x00;
-    byte1 = 0x00;
-    byte2 = 0x3F;
-  }
-  
+  if (g_engine_running) { byte0 = 0x40; byte1 = 0x40; byte2 = 0x7F; }
+  else if (g_ignition) { byte0 = 0x00; byte1 = 0x40; byte2 = 0x7F; }
+  else { byte0 = 0x00; byte1 = 0x00; byte2 = 0x3F; }
   CAN.beginPacket(0x26E);
-  CAN.write(byte0);
-  CAN.write(byte1);
-  CAN.write(byte2);
-  CAN.write(0x50);
-  CAN.write(0xFF);
-  CAN.write(0xFF);
-  CAN.write(0xFF);
-  CAN.write(0xFF);
+  CAN.write(byte0); CAN.write(byte1); CAN.write(byte2); CAN.write(0x50);
+  CAN.write(0xFF); CAN.write(0xFF); CAN.write(0xFF); CAN.write(0xFF);
   CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x0AA
- * Purpose: Engine RPM display
- * Frequency: 100ms
- * 
- * RPM value is multiplied by 4 before sending
- * Example: 2000 RPM → send 8000
- */
 void sendRPM(uint16_t rpm) {
   uint16_t tempRpm = rpm * 4;
-  
   CAN.beginPacket(0x0AA);
-  CAN.write(0xFE);
-  CAN.write(0xFE);
-  CAN.write(0xFF);
-  CAN.write(0x00);
-  CAN.write(lo8(tempRpm));   // RPM low byte
-  CAN.write(hi8(tempRpm));   // RPM high byte
-  CAN.write(0xFE);
-  CAN.write(0x99);
+  CAN.write(0xFE); CAN.write(0xFE); CAN.write(0xFF); CAN.write(0x00);
+  CAN.write(lo8(tempRpm)); CAN.write(hi8(tempRpm)); CAN.write(0xFE); CAN.write(0x99);
   CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x349
- * Purpose: Fuel level display
- * Frequency: 200ms
- * 
- * Converts percentage to sensor value
- * Assumes 70L fuel tank capacity
- * Sensor value = litres * 160
- */
 void sendFuelLevel(uint16_t percent) {
-  uint16_t litres = (percent * 70) / 100;  // 70L tank
-  uint16_t sensor = litres * 160;          // Sensor conversion
-  
+  uint16_t sensor;
+  if (percent >= 90) sensor = 9000 + ((percent - 90) * 700 / 10);
+  else if (percent >= 75) sensor = 7000 + ((percent - 75) * 2000 / 15);
+  else if (percent >= 50) sensor = 4500 + ((percent - 50) * 2500 / 25);
+  else if (percent >= 25) sensor = 2000 + ((percent - 25) * 2500 / 25);
+  else if (percent >= 10) sensor = 500 + ((percent - 10) * 1500 / 15);
+  else sensor = percent * 50;
   CAN.beginPacket(0x349);
-  CAN.write(lo8(sensor));
-  CAN.write(hi8(sensor));
-  CAN.write(lo8(sensor));  // Value repeated 3 times
-  CAN.write(hi8(sensor));
-  CAN.write(0x00);
+  CAN.write(lo8(sensor)); CAN.write(hi8(sensor));
+  CAN.write(lo8(sensor)); CAN.write(hi8(sensor)); CAN.write(0x00);
   CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x1A6
- * Purpose: Vehicle speed and odometer
- * Frequency: 100ms
- * 
- * This is the trickiest message - it's a cumulative counter that increments
- * based on speed and time. The cluster calculates speed from the rate of change.
- * 
- * The speed value is divided by 3 to make the needle point correctly to the
- * km/h inner scale (the cluster expects MPH values).
- * 
- * Bytes 0-5: Speed counter (same value in 3x 16-bit words)
- * Bytes 6-7: Checksum counter (increments by 100 every 50ms)
- */
 void sendSpeed(uint16_t speed_kmh) {
   static uint32_t lastTimeSent = 0;
   static uint16_t lastReading = 0;
   static uint16_t counter = 0x0010;
-  
   uint32_t now = millis();
-  
-  // Initialize timing on first call
-  if (lastTimeSent == 0) {
-    lastTimeSent = now;
-    return;
-  }
-  
-  // Divide by 3 to compensate for MPH vs km/h scale
-  // This makes the needle point to the correct value on the inner km/h ring
+  if (lastTimeSent == 0) { lastTimeSent = now; return; }
   uint16_t speed_adjusted = speed_kmh / 3;
-  
-  // Calculate how much time has passed
   uint32_t timeDiff = now - lastTimeSent;
-  
-  // Formula from loopybunny: (((timeNow - timeLast) / 50) * speed) + lastReading
-  uint16_t speedIncrement = ((timeDiff / 50) * speed_adjusted);
-  uint16_t speedValue = lastReading + speedIncrement;
-  
-  lastReading = speedValue;
-  lastTimeSent = now;
-  
-  // Checksum counter increments by 100 every 50ms
-  uint16_t counterIncrement = (timeDiff / 50) * 100;
-  counter += counterIncrement;
-  uint16_t counterMasked = counter & 0x0FFF;  // Only lower 12 bits used
-  
+  uint16_t speedValue = lastReading + ((timeDiff / 50) * speed_adjusted);
+  lastReading = speedValue; lastTimeSent = now;
+  counter += (timeDiff / 50) * 100;
+  uint16_t counterMasked = counter & 0x0FFF;
   CAN.beginPacket(0x1A6);
-  CAN.write(lo8(speedValue));
-  CAN.write(hi8(speedValue));
-  CAN.write(lo8(speedValue));   // Speed value repeated
-  CAN.write(hi8(speedValue));
-  CAN.write(lo8(speedValue));   // Speed value repeated
-  CAN.write(hi8(speedValue));
-  CAN.write(lo8(counterMasked));
-  CAN.write(hi8(counterMasked) | 0xF0);  // Upper 4 bits always 0xF
+  CAN.write(lo8(speedValue)); CAN.write(hi8(speedValue));
+  CAN.write(lo8(speedValue)); CAN.write(hi8(speedValue));
+  CAN.write(lo8(speedValue)); CAN.write(hi8(speedValue));
+  CAN.write(lo8(counterMasked)); CAN.write(hi8(counterMasked) | 0xF0);
   CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x1F6
- * Purpose: Turn signal indicators
- * Frequency: As needed (checked every loop)
- * 
- * Handles blinking timing internally (500ms on/off)
- * Supports left, right, and hazard (both) indicators
- */
 void sendIndicators() {
   static uint8_t lastIndicator = 0;
-  static uint32_t lastIndicatorTime = 0;
-  static uint32_t lastFrameTime = 0;
-  
+  static uint32_t lastIndicatorTime = 0, lastFrameTime = 0;
   uint32_t current = millis();
   uint8_t lightIndicator = lastIndicator;
-  
-  // Handle indicator state changes
   if (g_lights_indicators == 0) {
-    if (current - lastIndicatorTime >= 600) {
-      lightIndicator = g_lights_indicators;
-    }
-  } else {
-    lightIndicator = g_lights_indicators;
-    lastIndicatorTime = current;
-  }
-  
-  // Send message if state changed or 600ms timeout
+    if (current - lastIndicatorTime >= 600) lightIndicator = g_lights_indicators;
+  } else { lightIndicator = g_lights_indicators; lastIndicatorTime = current; }
   if ((lastIndicator != lightIndicator) || (current - lastFrameTime >= 600)) {
     uint8_t byte0, byte1;
-    
     if (lightIndicator != 0) {
-      // Determine which indicator
       switch (lightIndicator) {
-        case 1: byte0 = 0x91; break;  // Left
-        case 2: byte0 = 0xA1; break;  // Right
-        case 3: byte0 = 0xB1; break;  // Hazard (both)
-        default: byte0 = 0x80; break;
+        case 1: byte0 = 0x91; break; case 2: byte0 = 0xA1; break;
+        case 3: byte0 = 0xB1; break; default: byte0 = 0x80; break;
       }
-      
-      // Toggle state for blinking
-      if (lastIndicator == lightIndicator) {
-        byte1 = 0xF1;
-      } else {
-        byte1 = 0xF2;
-      }
-    } else {
-      // Indicators off
-      byte0 = 0x80;
-      byte1 = 0xF0;
-    }
-    
-    lastIndicator = lightIndicator;
-    lastFrameTime = current;
-    
-    CAN.beginPacket(0x1F6);
-    CAN.write(byte0);
-    CAN.write(byte1);
-    CAN.endPacket();
+      byte1 = (lastIndicator == lightIndicator) ? 0xF1 : 0xF2;
+    } else { byte0 = 0x80; byte1 = 0xF0; }
+    lastIndicator = lightIndicator; lastFrameTime = current;
+    CAN.beginPacket(0x1F6); CAN.write(byte0); CAN.write(byte1); CAN.endPacket();
   }
 }
 
-/*
- * CAN ID: 0x21A
- * Purpose: Lighting control (headlights, fog lights, etc)
- * Frequency: 100ms
- * 
- * NOTE: The mappings are swapped on this cluster!
- * - g_lights_main controls parking light icon
- * - g_lights_side controls high beam icon
- * This may vary by cluster model.
- */
 void sendLights() {
   uint8_t lights = 0x00;
   
-  // Build lights byte with bit flags
-  if (g_lights_main) lights |= SIDE;           // High beam → parking light bit
-  if (g_lights_dip) lights |= DIP;             // Low beam
-  if (g_lights_side) lights |= MAIN;           // Parking → high beam bit
-  if (g_lights_front_fog) lights |= FRONT_FOG; // Front fog
-  if (g_lights_rear_fog) lights |= REAR_FOG;   // Rear fog
-  
-  CAN.beginPacket(0x21A);
-  CAN.write(lights);
-  CAN.write(0x00);
-  CAN.write(0xF7);
-  CAN.endPacket();
-}
-
-/*
- * CAN ID: 0x34F
- * Purpose: Handbrake warning light
- * Frequency: 100ms
- * 
- * Byte 0: 0xFE = Handbrake ON, 0xFD = Handbrake OFF
- */
-void sendHandbrake() {
-  uint8_t handbrake_byte = g_handbrake ? 0xFE : 0xFD;
-  
-  CAN.beginPacket(0x34F);
-  CAN.write(handbrake_byte);
-  CAN.write(0xFF);
-  CAN.endPacket();
-}
-
-/*
- * CAN ID: 0x332
- * Purpose: Oil pressure warning light
- * Frequency: 100ms
- * 
- * Sends 0x00 to keep warning light OFF
- */
-void sendOilPressure() {
-  CAN.beginPacket(0x332);
-  CAN.write(0x00);  // Oil pressure OK
-  CAN.write(0x00);
-  CAN.write(0x00);
-  CAN.endPacket();
-}
-
-/*
- * CAN ID: 0x545
- * Purpose: EML/Check Engine warning light
- * Frequency: 100ms
- * 
- * Sends 0xFC to keep warning light OFF
- */
-void sendEML() {
-  CAN.beginPacket(0x545);
-  CAN.write(0xFC);  // Engine OK
-  CAN.write(0xFF);
-  CAN.endPacket();
-}
-
-/*
- * CAN ID: 0x2FC
- * Purpose: Power steering warning light
- * Frequency: 100ms
- * 
- * Sends 0x00 to keep warning light OFF
- */
-void sendSteering() {
-  CAN.beginPacket(0x2FC);
-  CAN.write(0x00);  // Steering OK
-  CAN.write(0x00);
-  CAN.endPacket();
-}
-
-/*
- * CAN ID: 0x1D0
- * Purpose: Engine temperature (displayed on LCD)
- * Frequency: 100ms
- * 
- * Byte 0: Temperature value (temp_celsius + 48)
- * Byte 2: Counter (increments every 200ms)
- * Other bytes: Fixed values for clutch and fuel pressure indicators
- * 
- * Note: This cluster may not have a traditional temp gauge,
- * but displays temperature on the LCD screen.
- */
-void sendEngineTemperature() {
-  static uint8_t counter = 240;
-  static unsigned long lastCounterUpdate = 0;
-  
-  // Update counter every 200ms
-  if (millis() - lastCounterUpdate > 200) {
-    counter++;
-    if (counter > 254) counter = 240;  // Counter range: 240-254
-    lastCounterUpdate = millis();
+  // NOTE: This cluster has swapped bit positions for some lights
+  // Auto-enable backlight when ignition is on
+  if (g_ignition || g_engine_running) {
+    lights |= MAIN; // Backlight always on with ignition
   }
   
-  // Temperature formula: celsius + 48
-  uint8_t tempByte = (uint8_t)(g_engine_temperature + 48);
+  // Other lights only if explicitly turned on in game
+  if (g_lights_side) lights |= MAIN;    // Parking/side lights -> MAIN bit
+  if (g_lights_dip) lights |= SIDE;     // Low beams -> SIDE bit  
+  if (g_lights_main) lights |= DIP;     // High beams -> DIP bit
+  if (g_lights_front_fog) lights |= FRONT_FOG;
+  if (g_lights_rear_fog) lights |= REAR_FOG;
+  
+  CAN.beginPacket(0x21A); CAN.write(lights); CAN.write(0x00); CAN.write(0xF7); CAN.endPacket();
+}
+
+void sendHandbrake() {
+  CAN.beginPacket(0x34F); 
+  CAN.write(g_handbrake ? 0xFE : 0xFD); 
+  CAN.write(0xFF); 
+  CAN.endPacket();
+}
+
+void sendOilPressure() {
+  CAN.beginPacket(0x332); CAN.write(0x00); CAN.write(0x00); CAN.write(0x00); CAN.endPacket();
+}
+
+void sendEML() {
+  CAN.beginPacket(0x545); CAN.write(0xFC); CAN.write(0xFF); CAN.endPacket();
+}
+
+void sendSteering() {
+  // Send steering wheel position (CAN 0x0C4)
+  // Using data from real CAN trace (e64_dump_peter_black.trc)
+  CAN.beginPacket(0x0C4);
+  CAN.write(0x00);
+  CAN.write(0x80);  // Steering position low
+  CAN.write(0xFD);  // Steering position high
+  CAN.write(0x00);
+  CAN.write(0x80);
+  CAN.write(0xFF);
+  CAN.write(0xF6);
+  CAN.endPacket();
+}
+
+void canSendErrorLight(uint16_t light_id, bool enable) {
+  // CAN ID 0x592 - Symbol/warning light system
+  // Format: 0x40, light_id_low, light_id_high, state, 0xFF, 0xFF, 0xFF, 0xFF
+  const uint8_t ON = 0x31;
+  const uint8_t OFF = 0x30;
+  
+  CAN.beginPacket(0x592);
+  CAN.write(0x40);
+  CAN.write(lo8(light_id));
+  CAN.write(hi8(light_id));
+  CAN.write(enable ? ON : OFF);
+  CAN.write(0xFF);
+  CAN.write(0xFF);
+  CAN.write(0xFF);
+  CAN.write(0xFF);
+  CAN.endPacket();
+}
+
+void canSendDmeStatus() {
+  // CAN ID 0x12F - DME (Engine Management) status
+  // This tells the cluster the engine is healthy (no check engine light)
+  CAN.beginPacket(0x12F);
+  CAN.write(0x3F);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x40);
+  CAN.write(0x01);
+  CAN.write(0x00);
+  CAN.endPacket();
+}
+
+void canSuppressSos() {
+  // CAN ID 0x0C1 - SOS warning suppression
+  // Use random byte in first position
+  CAN.beginPacket(0x0C1);
+  CAN.write((uint8_t)random(0, 256));
+  CAN.write(0xFF);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.write(0x00);
+  CAN.endPacket();
+}
+
+void sendTime() {
+  // CAN ID 0x39E - Time and date display
+  CAN.beginPacket(0x39E);
+  CAN.write(g_time_hour);
+  CAN.write(g_time_minute);
+  CAN.write(g_time_second);
+  CAN.write(g_time_day);
+  CAN.write((uint8_t)((g_time_month << 4) | 0x0F));  // Month in upper 4 bits
+  CAN.write((uint8_t)(g_time_year & 0xFF));          // Year low byte
+  CAN.write((uint8_t)((g_time_year >> 8) & 0xFF));   // Year high byte
+  CAN.write(0xF2);
+  CAN.endPacket();
+}
+
+void suppressSteeringWarning() {
+  // STEERING_WARNING = 73 (from types.h)
+  canSendErrorLight(73, false);
+}
+
+void suppressServiceLight() {
+  // SERVICE_LIGHT = 281 (from types.h)
+  canSendErrorLight(281, false);
+}
+
+void suppressCheckEngineLight() {
+  // CHECK_ENGINE = 34 (from types.h)
+  canSendErrorLight(34, false);
+}
+
+void suppressCheckEngineDouble() {
+  // CHECK_ENGINE_DOUBLE = 31 (from types.h)
+  canSendErrorLight(31, false);
+}
+
+void sendGearbox() {
+  uint8_t byte0 = 0x00;
+  if (g_gear_mode == 'P') byte0 = 0xE1;
+  else if (g_current_gear == 0) byte0 = 0xD2;
+  else if (g_current_gear == 1) byte0 = 0xB4;
+  else byte0 = 0x78;
+  
+  uint8_t byte1 = 0x0F;
+  if (g_gear_mode == 'M' || g_gear_mode == 'S') {
+    switch (g_current_gear) {
+      case 2: byte1 = 0x50; break; case 3: byte1 = 0x60; break;
+      case 4: byte1 = 0x70; break; case 5: byte1 = 0x80; break;
+      case 6: byte1 = 0x90; break; case 7: byte1 = 0xA0; break;
+      case 8: byte1 = 0xB0; break; default: byte1 = 0x00; break;
+    }
+  }
+  
+  static uint8_t counter_high = 0;
+  uint8_t byte3;
+  if (g_gear_mode == 'P' || g_current_gear == 0) {
+    byte3 = (counter_high << 4) | 0x0C;
+    counter_high = (counter_high + 1) % 16;
+  } else {
+    byte3 = (counter_high << 4) | (g_gear_mode == 'S' ? 0x07 : 0x0D);
+    counter_high = (counter_high + 1) % 15;
+  }
+  
+  uint8_t byte4 = (g_gear_mode == 'M' || g_gear_mode == 'S') ? 0xF2 : 0xF0;
+  CAN.beginPacket(0x1D2);
+  CAN.write(byte0); CAN.write(byte1); CAN.write(0xFF); CAN.write(byte3);
+  CAN.write(byte4); CAN.write(0xFF); CAN.write(0xFF); CAN.write(0xFF);
+  CAN.endPacket();
+}
+
+void sendEngineTemperature() {
+  // CAN ID 0x1D0 sends both water temp (byte 0) and oil temp (byte 1)
+  static uint8_t alive_counter = 0;
+  static unsigned long lastUpdate = 0;
+  
+  uint32_t now = millis();
+  if (now - lastUpdate > 100) {  // Update every 100ms
+    alive_counter = (alive_counter + 1) & 0x0F; // Increment and keep lower 4 bits
+    lastUpdate = now;
+  }
+  
+  // Engine run state: 0x0 = off, 0x1 = starting, 0x2 = running
+  uint8_t engine_run_state = g_engine_running ? 0x2 : 0x0;
+  
+  // Byte 2: Combine alive counter (lower 4 bits) and engine state (bits 4-5)
+  uint8_t byte2 = alive_counter | ((engine_run_state & 0x03) << 4);
   
   CAN.beginPacket(0x1D0);
-  CAN.write(tempByte);  // Temperature
-  CAN.write(0xFF);
-  CAN.write(0x63);
-  CAN.write(0xCD);
-  CAN.write(0x5D);
-  CAN.write(0x37);
-  CAN.write(0xCD);      // Clutch status
-  CAN.write(0xA8);      // Fuel/brake pressure
+  CAN.write((uint8_t)(g_engine_temperature + 48)); // Byte 0: Water temperature
+  CAN.write((uint8_t)(g_oil_temperature + 48));    // Byte 1: Oil temperature
+  CAN.write(byte2);                                 // Byte 2: Alive counter + engine state
+  CAN.write(0xCD); // Byte 3
+  CAN.write(0x5D); // Byte 4: Fuel injection low (dummy)
+  CAN.write(0x37); // Byte 5: Fuel injection high (dummy)
+  CAN.write(0xCD); // Byte 6
+  CAN.write(0xA8); // Byte 7
   CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x0D7
- * Purpose: Airbag/Seatbelt counter (keeps warnings off)
- * Frequency: 200ms
- * 
- * Incrementing counter tells cluster these systems are active
- */
 void sendAirbagSeatbeltCounter() {
   static uint8_t count = 0x00;
-  
-  CAN.beginPacket(0x0D7);
-  CAN.write(count);
-  CAN.write(0xFF);
-  CAN.endPacket();
-  
-  count++;
+  CAN.beginPacket(0x0D7); CAN.write(count++); CAN.write(0xFF); CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x19E
- * Purpose: ABS brake counter 2 (keeps ABS warning off)
- * Frequency: 200ms
- * 
- * Complex counter that modifies byte 2 to indicate ABS is functioning
- */
 void sendABSBrakeCounter2() {
   static uint8_t absFrame[8] = {0x00, 0xE0, 0xB3, 0xFC, 0xF0, 0x43, 0x00, 0x65};
-  
-  // Update counter in byte 2
   absFrame[2] = ((((absFrame[2] >> 4) + 3) << 4) & 0xF0) | 0x03;
-  
   CAN.beginPacket(0x19E);
-  CAN.write(absFrame[0]);
-  CAN.write(absFrame[1]);
-  CAN.write(absFrame[2]);
-  CAN.write(absFrame[3]);
-  CAN.write(absFrame[4]);
-  CAN.write(absFrame[5]);
-  CAN.write(absFrame[6]);
-  CAN.write(absFrame[7]);
+  for (int i = 0; i < 8; i++) CAN.write(absFrame[i]);
   CAN.endPacket();
 }
 
-/*
- * CAN ID: 0x0C0
- * Purpose: ABS brake counter 1 (keeps ABS warning off)
- * Frequency: 200ms
- * 
- * Counter that cycles from 0xF0 to 0xFF
- */
 void sendABSBrakeCounter1() {
   static uint8_t count = 0xF0;
-  
-  CAN.beginPacket(0x0C0);
-  CAN.write(count);
-  CAN.write(0xFF);
-  CAN.endPacket();
-  
-  // Increment and wrap at 0xFF back to 0xF0
+  CAN.beginPacket(0x0C0); CAN.write(count); CAN.write(0xFF); CAN.endPacket();
   count = ((count + 1) | 0xF0);
 }
 
-/*
- * CAN ID: 0x394 or 0x581
- * Purpose: Seatbelt warning light
- * Frequency: 200ms
- * 
- * Currently hardcoded to OFF (state = false)
- * CAN ID changes based on state
- */
 void seatbeltLight(bool state) {
-  uint8_t thirdBit = state ? 0x29 : 0x28;
   uint16_t canID = state ? 0x394 : 0x581;
-  
-  CAN.beginPacket(canID);
-  CAN.write(0x40);
-  CAN.write(0x4D);
-  CAN.write(0x00);
-  CAN.write(thirdBit);
-  CAN.write(0xFF);
-  CAN.write(0xFF);
-  CAN.write(0xFF);
-  CAN.write(0xFF);
+  CAN.beginPacket(canID); CAN.write(0x40); CAN.write(0x4D); CAN.write(0x00);
+  CAN.write(state ? 0x29 : 0x28);
+  CAN.write(0xFF); CAN.write(0xFF); CAN.write(0xFF); CAN.write(0xFF);
   CAN.endPacket();
 }
 
-// ===== Data Parsing =====
+void updateHandbrakeFiltered() {
+  // HANDBRAKE FILTERING: Ignore brief glitches
+  static bool last_raw = false;
+  uint32_t now = millis();
+  
+  if (g_handbrake_raw != last_raw) {
+    g_handbrake_change_time = now;
+    last_raw = g_handbrake_raw;
+  }
+  
+  if ((now - g_handbrake_change_time) > HANDBRAKE_FILTER_MS) {
+    g_handbrake = g_handbrake_raw;
+  }
+}
 
-/*
- * Parse incoming SimHub data
- * 
- * Format: SH;field1;field2;field3;...;\n
- * 
- * Field mapping:
- * 0:  "SH" (header)
- * 1:  ignition (true/false or 1/0)
- * 2:  engine_running (true/false or 1/0)
- * 3:  lights_side (0/1)
- * 4:  lights_dip (0/1)
- * 5:  lights_main (0/1)
- * 6:  lights_front_fog (0/1)
- * 7:  lights_rear_fog (0/1)
- * 8:  lights_indicators (0=off, 1=left, 2=right, 3=hazard)
- * 9:  RPM (float)
- * 10: Speed in km/h (float)
- * 11: Fuel percentage (float)
- * 12: Engine temperature in Celsius (float)
- * 13: Handbrake (0/1)
- * 14: ABS (0/1) - not currently used
- * 15: Airbag (0/1) - not currently used
- * 16: Seatbelt (0/1) - not currently used
- * 17-22: Time data (hour, minute, second, day, month, year)
- */
+void updateGearFiltered() {
+  // GEAR FILTERING: Ignore brief gear changes (especially random N)
+  static uint8_t last_gear_raw = 1;
+  static char last_mode_raw = 'N';
+  uint32_t now = millis();
+  
+  // Check if either gear or mode changed
+  if (g_current_gear_raw != last_gear_raw || g_gear_mode_raw != last_mode_raw) {
+    g_gear_change_time = now;
+    last_gear_raw = g_current_gear_raw;
+    last_mode_raw = g_gear_mode_raw;
+  }
+  
+  // If stable for long enough, update the filtered values
+  if ((now - g_gear_change_time) > GEAR_FILTER_MS) {
+    g_current_gear = g_current_gear_raw;
+    g_gear_mode = g_gear_mode_raw;
+  }
+}
+
+void updateOilTempFiltered() {
+  // OIL TEMP FILTERING: Smooth out temperature changes
+  static uint16_t last_oil_temp_raw = 90;
+  static uint32_t lastPrint = 0;
+  uint32_t now = millis();
+  
+  // Debug: Print oil temp values every 2 seconds
+  if (now - lastPrint > 2000) {
+    Serial.print("OIL TEMP: raw=");
+    Serial.print(g_oil_temperature_raw);
+    Serial.print(" filtered=");
+    Serial.println(g_oil_temperature);
+    lastPrint = now;
+  }
+  
+  // Only update if temperature changed significantly (more than 2 degrees)
+  if (abs((int)g_oil_temperature_raw - (int)last_oil_temp_raw) > 2) {
+    g_oil_temp_change_time = now;
+    last_oil_temp_raw = g_oil_temperature_raw;
+  }
+  
+  // If stable for long enough, update the filtered value
+  if ((now - g_oil_temp_change_time) > OIL_TEMP_FILTER_MS) {
+    g_oil_temperature = g_oil_temperature_raw;
+  }
+}
+
 void parseSimHubData() {
   fieldCount = 0;
   int lastSemi = 0;
+  inputString.trim();
   
-  // Split string by semicolon
   for (unsigned int i = 0; i < inputString.length(); i++) {
     if (inputString[i] == ';') {
       if (fieldCount < 30) {
         fields[fieldCount] = inputString.substring(lastSemi + 1, i);
+        fields[fieldCount].trim();
       }
       fieldCount++;
       lastSemi = i;
     }
   }
   
-  // Parse each field into the appropriate variable
+  if (lastSemi < (int)inputString.length() - 1 && fieldCount < 30) {
+    fields[fieldCount] = inputString.substring(lastSemi + 1);
+    fields[fieldCount].trim();
+    fieldCount++;
+  }
+  
   if (fieldCount > 1) g_ignition = (fields[1] == "true" || fields[1] == "1");
   if (fieldCount > 2) g_engine_running = (fields[2] == "true" || fields[2] == "1");
-  if (fieldCount > 3) g_lights_side = (fields[3].toInt() == 1);
-  if (fieldCount > 4) g_lights_dip = (fields[4].toInt() == 1);
-  if (fieldCount > 5) g_lights_main = (fields[5].toInt() == 1);
-  if (fieldCount > 6) g_lights_front_fog = (fields[6].toInt() == 1);
-  if (fieldCount > 7) g_lights_rear_fog = (fields[7].toInt() == 1);
-  if (fieldCount > 8) g_lights_indicators = fields[8].toInt();
-  if (fieldCount > 9) g_rpm = (uint16_t)fields[9].toFloat();
-  if (fieldCount > 10) g_speed = (uint16_t)fields[10].toFloat();
-  if (fieldCount > 11) g_fuel = (uint16_t)fields[11].toFloat();
-  if (fieldCount > 12) g_engine_temperature = (uint16_t)fields[12].toFloat();
-  if (fieldCount > 13) g_handbrake = (fields[13].toInt() == 1);
+  if (fieldCount > 3) g_oil_temperature_raw = (uint16_t)fields[3].toFloat();  // Field 3: Oil temp (raw)
+  if (fieldCount > 4) g_lights_side = (fields[4].toInt() == 1);
+  if (fieldCount > 5) g_lights_dip = (fields[5].toInt() == 1);
+  if (fieldCount > 6) g_lights_main = (fields[6].toInt() == 1);
+  if (fieldCount > 7) g_lights_front_fog = (fields[7].toInt() == 1);
+  if (fieldCount > 8) g_lights_rear_fog = (fields[8].toInt() == 1);
+  if (fieldCount > 9) g_lights_indicators = fields[9].toInt();
+  if (fieldCount > 10) g_rpm = (uint16_t)fields[10].toFloat();
+  if (fieldCount > 11) g_speed = (uint16_t)fields[11].toFloat();
+  if (fieldCount > 12) g_fuel = (uint16_t)fields[12].toFloat();
+  if (fieldCount > 13) g_engine_temperature = (uint16_t)fields[13].toFloat();  // Field 13: Water temp
+  if (fieldCount > 14) g_handbrake_raw = (fields[14].toInt() == 1);
+  if (fieldCount > 15) g_current_gear_raw = (uint8_t)fields[15].toInt();
+  if (fieldCount > 16) {
+    String mode = fields[16];
+    if (mode.length() > 0) g_gear_mode_raw = mode.charAt(0);
+  }
+  // Time and date (fields 17-22)
+  // Debug: Print RAW values BEFORE validation
+  static uint32_t lastTimePrint = 0;
+  if (millis() - lastTimePrint > 2000) {
+    Serial.print("RAW TIME FIELDS: [");
+    if (fieldCount > 17) Serial.print(fields[17]); else Serial.print("?");
+    Serial.print(";");
+    if (fieldCount > 18) Serial.print(fields[18]); else Serial.print("?");
+    Serial.print(";");
+    if (fieldCount > 19) Serial.print(fields[19]); else Serial.print("?");
+    Serial.print(";");
+    if (fieldCount > 20) Serial.print(fields[20]); else Serial.print("?");
+    Serial.print(";");
+    if (fieldCount > 21) Serial.print(fields[21]); else Serial.print("?");
+    Serial.print(";");
+    if (fieldCount > 22) Serial.print(fields[22]); else Serial.print("?");
+    Serial.print("] -> Display: ");
+    Serial.print(g_time_hour); Serial.print(":");
+    Serial.print(g_time_minute); Serial.print(":");
+    Serial.println(g_time_second);
+    lastTimePrint = millis();
+  }
+  
+  // Only update time if we receive valid values (not 0:0:0)
+  if (fieldCount > 17) {
+    uint16_t new_year = (uint16_t)fields[17].toInt();
+    if (new_year > 2000) g_time_year = new_year;  // Only update if valid year
+  }
+  if (fieldCount > 18) {
+    uint8_t new_month = (uint8_t)fields[18].toInt();
+    if (new_month >= 1 && new_month <= 12) g_time_month = new_month;  // Only if valid month
+  }
+  if (fieldCount > 19) {
+    uint8_t new_day = (uint8_t)fields[19].toInt();
+    if (new_day >= 1 && new_day <= 31) g_time_day = new_day;  // Only if valid day
+  }
+  if (fieldCount > 20) {
+    uint8_t new_hour = (uint8_t)fields[20].toInt();
+    if (new_hour <= 23) g_time_hour = new_hour;  // Only if valid hour (0-23)
+  }
+  if (fieldCount > 21) {
+    uint8_t new_minute = (uint8_t)fields[21].toInt();
+    if (new_minute <= 59) g_time_minute = new_minute;  // Only if valid minute
+  }
+  if (fieldCount > 22) {
+    uint8_t new_second = (uint8_t)fields[22].toInt();
+    if (new_second <= 59) g_time_second = new_second;  // Only if valid second
+  }
 }
 
-// ===== Timing Variables =====
-uint32_t timestamp100ms = 0;   // For 100ms interval messages
-uint32_t timestamp200ms = 0;   // For 200ms interval messages
-
-// ===== Arduino Setup =====
 void setup() {
-  // Initialize serial communication with SimHub
   Serial.begin(115200);
-  
-  // Configure CAN shield pins
   CAN.setPins(CS_PIN, IRQ_PIN);
-  
-  // Set SPI frequency (8MHz clock on shield)
   CAN.setSPIFrequency(1E6);
-  
-  // Initialize CAN bus at 100kbit/s (BMW K-CAN speed)
   while (!CAN.begin(100E3)) {
     Serial.println("CAN init fail");
     delay(100);
   }
-  
   Serial.println("BMW E87 Cluster - Ready!");
-  Serial.println("Waiting for SimHub data...");
+  Serial.println("Features: RPM, Speed, Fuel, Gears, Indicators");
+  Serial.println("Glitch filtering: Handbrake (500ms), Gear (200ms)");
 }
 
-// ===== Main Loop =====
 void loop() {
-  // Read incoming serial data from SimHub
   while (Serial.available()) {
     char c = Serial.read();
-    
-    if (c == '\n') {
-      // Complete message received
-      if (inputString.startsWith("SH;")) {
+    if (c == '\n' || c == '\r') {
+      if (inputString.length() > 0 && inputString.startsWith("SH")) {
         parseSimHubData();
+        updateHandbrakeFiltered();
+        updateGearFiltered();
+        updateOilTempFiltered(); // Apply oil temp filter
       }
-      inputString = "";  // Clear buffer for next message
+      inputString = "";
     } else {
-      inputString += c;  // Build message
+      inputString += c;
     }
   }
   
-  // Send turn indicators (has its own timing)
   sendIndicators();
   
-  // Send high-frequency messages (100ms interval)
+  // CRITICAL: Suppress steering warning on EVERY loop (no delay)
+  // This prevents random icon flickering
+  suppressSteeringWarning();
+  
+  // 50ms loop - Steering position
+  if (millis() - timestamp50ms > 49) {
+    sendSteering();           // Send steering position
+    timestamp50ms = millis();
+  }
+  
   if (millis() - timestamp100ms > 99) {
-    sendIgnitionKeyOn();
-    sendIgnitionStatus();
-    sendRPM(g_rpm);
-    sendSpeed(g_speed);
-    sendLights();
-    sendEngineTemperature();
-    sendHandbrake();
-    sendOilPressure();
-    sendEML();
-    sendSteering();
-    
+    sendIgnitionKeyOn(); sendIgnitionStatus(); sendRPM(g_rpm); sendSpeed(g_speed);
+    sendLights(); sendEngineTemperature(); sendGearbox(); sendHandbrake();
+    sendTime(); // Send time/date to cluster
+    // sendOilPressure(); // DISABLED - preventing warnings
+    // sendEML(); // DISABLED - preventing warnings
     timestamp100ms = millis();
   }
   
-  // Send low-frequency messages (200ms interval)
   if (millis() - timestamp200ms > 199) {
-    sendFuelLevel(g_fuel);
-    sendAirbagSeatbeltCounter();
-    sendABSBrakeCounter2();
-    sendABSBrakeCounter1();
-    seatbeltLight(false);
-    
+    sendFuelLevel(g_fuel); sendAirbagSeatbeltCounter();
+    sendABSBrakeCounter2(); sendABSBrakeCounter1(); seatbeltLight(false);
+    // suppressSteeringWarning moved to 50ms loop for more frequent updates
+    suppressServiceLight();      // Turn off service light
+    suppressCheckEngineLight();  // Turn off check engine light (symbol)
+    suppressCheckEngineDouble(); // Turn off double check engine light
+    canSendDmeStatus();          // Send DME status OK
+    canSuppressSos();            // Suppress SOS warning
     timestamp200ms = millis();
   }
 }

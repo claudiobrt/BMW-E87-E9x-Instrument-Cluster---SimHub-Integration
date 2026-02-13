@@ -194,7 +194,6 @@ void sendEML() {
 
 void sendSteering() {
   // Send steering wheel position (CAN 0x0C4)
-  // Using data from real CAN trace (e64_dump_peter_black.trc)
   CAN.beginPacket(0x0C4);
   CAN.write(0x00);
   CAN.write(0x80);  // Steering position low
@@ -269,22 +268,17 @@ void sendTime() {
 }
 
 void suppressSteeringWarning() {
-  // STEERING_WARNING = 73 (from types.h)
+
   canSendErrorLight(73, false);
 }
-
 void suppressServiceLight() {
-  // SERVICE_LIGHT = 281 (from types.h)
+
   canSendErrorLight(281, false);
 }
-
 void suppressCheckEngineLight() {
-  // CHECK_ENGINE = 34 (from types.h)
   canSendErrorLight(34, false);
 }
-
 void suppressCheckEngineDouble() {
-  // CHECK_ENGINE_DOUBLE = 31 (from types.h)
   canSendErrorLight(31, false);
 }
 
@@ -464,7 +458,7 @@ void parseSimHubData() {
   
   if (fieldCount > 1) g_ignition = (fields[1] == "true" || fields[1] == "1");
   if (fieldCount > 2) g_engine_running = (fields[2] == "true" || fields[2] == "1");
-  if (fieldCount > 3) g_oil_temperature_raw = (uint16_t)fields[3].toFloat();  // Field 3: Oil temp (raw)
+  if (fieldCount > 3) g_oil_temperature_raw = (uint16_t)fields[3].toFloat();  
   if (fieldCount > 4) g_lights_side = (fields[4].toInt() == 1);
   if (fieldCount > 5) g_lights_dip = (fields[5].toInt() == 1);
   if (fieldCount > 6) g_lights_main = (fields[6].toInt() == 1);
@@ -474,7 +468,7 @@ void parseSimHubData() {
   if (fieldCount > 10) g_rpm = (uint16_t)fields[10].toFloat();
   if (fieldCount > 11) g_speed = (uint16_t)fields[11].toFloat();
   if (fieldCount > 12) g_fuel = (uint16_t)fields[12].toFloat();
-  if (fieldCount > 13) g_engine_temperature = (uint16_t)fields[13].toFloat();  // Field 13: Water temp
+  if (fieldCount > 13) g_engine_temperature = (uint16_t)fields[13].toFloat();  
   if (fieldCount > 14) g_handbrake_raw = (fields[14].toInt() == 1);
   if (fieldCount > 15) g_current_gear_raw = (uint8_t)fields[15].toInt();
   if (fieldCount > 16) {

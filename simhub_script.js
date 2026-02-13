@@ -1,5 +1,5 @@
 /*
- * BMW E87 - Complete Script with Time (Exact Original Format)
+ * BMW E87 - Complete Script with Time 
  */
 
 // ===== IGNITION AND ENGINE =====
@@ -112,7 +112,6 @@ if (game_gear === 'R' || game_gear === -1 || is_reverse) {
 }
 
 // ===== BUILD OUTPUT =====
-// Use exact format from original custom_protocol.txt
 // Round ALL numeric values to prevent decimals from corrupting field positions
 return 'SH;' + ignition + ';' + engine_running + ';' + Math.round(oil_temperature) + ';' +
        lights_side + ';' + lights_dip + ';' + lights_main + ';' + 

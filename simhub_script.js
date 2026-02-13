@@ -1,110 +1,128 @@
 /*
- * BMW E87 Cluster - SimHub JavaScript
- * 
- * This script extracts game data from Euro Truck Simulator 2 / American Truck Simulator
- * and formats it for transmission to the Arduino.
- * 
- * Installation:
- * 1. Open SimHub
- * 2. Go to Settings → Custom Serial Devices
- * 3. Add New Device
- * 4. Set Baud Rate to 115200
- * 5. Set Update Message Format to "JavaScript"
- * 6. Paste this entire script into the text box
- * 
- * Output Format:
- * SH;ignition;engine;side;dip;main;front_fog;rear_fog;indicators;RPM;SPEED;FUEL;temp;handbrake;abs;airbag;seatbelt;hour;minute;second;day;month;year;\n
+ * BMW E87 - Complete Script with Time (Exact Original Format)
  */
 
-// === IGNITION AND ENGINE ===
-var ignition = $prop('EngineIgnitionOn');
-var engine_running = $prop('EngineStarted');
+// ===== IGNITION AND ENGINE =====
+var ignition = $prop('EngineIgnitionOn') ? 1 : 0;
+var engine_running = $prop('EngineStarted') ? 1 : 0;
 
-// === LIGHTS ===
-// Parking/side lights
-var lights_side = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.Parking'));
+// ===== OIL TEMPERATURE (Field 3) =====
+var oil_temperature = $prop('OilTemperature');
+if (!oil_temperature || isNaN(oil_temperature)) {
+    oil_temperature = $prop('GameRawData.BeamNG.electrics.oiltemp');
+}
+if (!oil_temperature || isNaN(oil_temperature)) {
+    oil_temperature = $prop('GameRawData.TruckValues.CurrentValues.DashboardValues.OilTemperature');
+}
+if (!oil_temperature || isNaN(oil_temperature)) {
+    oil_temperature = $prop('OilTemp');
+}
+if (!oil_temperature || isNaN(oil_temperature)) {
+    var water = $prop('WaterTemperature');
+    oil_temperature = water || 0;
+}
+// CRITICAL: Round to integer to prevent decimals from corrupting message parsing
+oil_temperature = Math.round(oil_temperature);
 
-// Low beam headlights
-var lights_dip = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.BeamLow'));
+// ===== LIGHTS - Universal approach =====
+var lights_side_beamng = Number($prop('GameRawData.BeamNG.lightsState.lightbar'));
+var lights_dip_beamng = Number($prop('GameRawData.BeamNG.lightsState.lowBeam'));
+var lights_main_beamng = Number($prop('GameRawData.BeamNG.lightsState.highBeam'));
+var lights_front_fog_beamng = Number($prop('GameRawData.BeamNG.lightsState.fogLights'));
 
-// High beam headlights
-var lights_main = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.BeamHigh'));
+var lights_side_truck = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.Parking'));
+var lights_dip_truck = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.BeamLow'));
+var lights_main_truck = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.BeamHigh'));
+var lights_front_fog_truck = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.Beacon'));
 
-// Front fog lights (using Beacon as ETS2/ATS don't have dedicated fog light property)
-var lights_front_fog = Number($prop('GameRawData.TruckValues.CurrentValues.LightsValues.Beacon'));
-
-// Rear fog lights (not available in ETS2/ATS)
+var lights_side = (lights_side_beamng || lights_side_truck) ? 1 : 0;
+var lights_dip = (lights_dip_beamng || lights_dip_truck) ? 1 : 0;
+var lights_main = (lights_main_beamng || lights_main_truck) ? 1 : 0;
+var lights_front_fog = (lights_front_fog_beamng || lights_front_fog_truck) ? 1 : 0;
 var lights_rear_fog = 0;
 
-// === TURN INDICATORS ===
-// Get left and right indicator states
-var lights_indicator_left_prop = $prop('GameRawData.TruckValues.CurrentValues.LightsValues.BlinkerLeftOn');
-var lights_indicator_right_prop = $prop('GameRawData.TruckValues.CurrentValues.LightsValues.BlinkerRightOn');
+// ===== TURN INDICATORS =====
+var indicator_left = $prop('DataCorePlugin.GameData.NewData.TurnIndicatorLeft');
+var indicator_right = $prop('DataCorePlugin.GameData.NewData.TurnIndicatorRight');
 
-// Determine indicator state:
-// 0 = off, 1 = left, 2 = right, 3 = hazard (both)
-var lights_indicators;
-if (lights_indicator_left_prop && lights_indicator_right_prop) {
-    lights_indicators = 3; // Hazard lights (both on)
-} else if (lights_indicator_left_prop) {
-    lights_indicators = 1; // Left indicator
-} else if (lights_indicator_right_prop) {
-    lights_indicators = 2; // Right indicator
-} else {
-    lights_indicators = 0; // Indicators off
+var lights_indicators = 0;
+if (indicator_left && indicator_right) {
+    lights_indicators = 3;
+} else if (indicator_left) {
+    lights_indicators = 1;
+} else if (indicator_right) {
+    lights_indicators = 2;
 }
 
-// === ENGINE DATA ===
-// Engine RPM
+// ===== ENGINE DATA =====
 var rpm = $prop('Rpms');
+if (!rpm || isNaN(rpm)) rpm = 0;
 
-// Vehicle speed in km/h
 var speed = $prop('SpeedKmh');
+if (!speed || isNaN(speed)) speed = 0;
 
-// === FUEL ===
-// Calculate fuel percentage from current and max fuel
+// ===== FUEL =====
 var currentFuel = $prop('Fuel');
 var maxFuel = $prop('MaxFuel');
+var fuel = 0;
 
-function calculate(current, max) {
-    return (current / max) * 100;
+if (maxFuel && maxFuel > 0) {
+    fuel = (currentFuel / maxFuel) * 100;
+}
+if (isNaN(fuel) || fuel < 0) fuel = 0;
+if (fuel > 100) fuel = 100;
+
+// ===== WATER TEMPERATURE (Field 12) =====
+var engine_temperature = $prop('WaterTemperature');
+if (!engine_temperature || isNaN(engine_temperature)) {
+    engine_temperature = $prop('GameRawData.TruckValues.CurrentValues.DashboardValues.WaterTemperature');
+}
+if (!engine_temperature || isNaN(engine_temperature)) engine_temperature = 0;
+
+// ===== HANDBRAKE =====
+var handbrake_beamng = $prop('Handbrake');
+var handbrake_truck = $prop('GameRawData.TruckValues.CurrentValues.MotorValues.BrakeValues.ParkingBrake');
+var handbrake = (handbrake_beamng || handbrake_truck) ? 1 : 0;
+
+// ===== GEAR CALCULATION =====
+var current_gear = 1;
+var gear_mode_char = "N";
+
+var game_gear = $prop('Gear');
+var is_reverse = $prop('GameRawData.TruckValues.CurrentValues.DashboardValues.GearDashboards.reverse');
+
+if (game_gear === 'R' || game_gear === -1 || is_reverse) {
+    current_gear = 0;
+    gear_mode_char = "R";
+} else if (game_gear === 'N' || game_gear === 0 || game_gear === null || game_gear === undefined) {
+    current_gear = 1;
+    gear_mode_char = "N";
+} else if (game_gear === 'P') {
+    current_gear = 1;
+    gear_mode_char = "P";
+} else {
+    var gear_number = parseInt(game_gear);
+    if (!isNaN(gear_number) && gear_number >= 1) {
+        current_gear = Math.min(gear_number + 1, 8);
+        gear_mode_char = "M";
+    } else {
+        current_gear = 1;
+        gear_mode_char = "N";
+    }
 }
 
-var fuel = calculate(currentFuel, maxFuel);
-
-// Handle case where fuel data is not available
-if (isNaN(fuel)) {
-    fuel = 0;
-}
-
-// === ENGINE TEMPERATURE ===
-// Water/coolant temperature in Celsius
-var engine_temperature = $prop('GameRawData.TruckValues.CurrentValues.DashboardValues.WaterTemperature');
-
-// === WARNING LIGHTS ===
-// Handbrake/parking brake status
-var handbrake = Number($prop('GameRawData.TruckValues.CurrentValues.MotorValues.BrakeValues.ParkingBrake'));
-
-// ABS warning (not used in ETS2/ATS - always off)
-var abs = 0;
-
-// Airbag warning (not used - always off)
-var airbag = 0;
-
-// Seatbelt warning (not used - always off)
-var seatbelt = 0;
-
-// === TIME DATA ===
-// Current system time (for potential clock display on cluster LCD)
-var currentTime = new Date();
-var hour = currentTime.getHours();
-var minute = currentTime.getMinutes();
-var second = currentTime.getSeconds();
-var year = currentTime.getFullYear();
-var month = currentTime.getMonth();
-var day = currentTime.getDay();
-
-// === BUILD OUTPUT MESSAGE ===
-// Format: SH;field1;field2;field3;...;\n
-// Fields are separated by semicolons, message ends with newline
-return `SH;${ignition};${engine_running};${lights_side};${lights_dip};${lights_main};${lights_front_fog};${lights_rear_fog};${lights_indicators};${rpm};${speed};${fuel};${engine_temperature};${handbrake};${abs};${airbag};${seatbelt};${hour};${minute};${second};${day};${month};${year};\n`;
+// ===== BUILD OUTPUT =====
+// Use exact format from original custom_protocol.txt
+// Round ALL numeric values to prevent decimals from corrupting field positions
+return 'SH;' + ignition + ';' + engine_running + ';' + Math.round(oil_temperature) + ';' +
+       lights_side + ';' + lights_dip + ';' + lights_main + ';' + 
+       lights_front_fog + ';' + lights_rear_fog + ';' + lights_indicators + ';' + 
+       Math.round(rpm) + ';' + Math.round(speed) + ';' + Math.round(fuel) + ';' + 
+       Math.round(engine_temperature) + ';' + 
+       handbrake + ';' + current_gear + ';' + gear_mode_char + ';' +
+       format($prop('DataCorePlugin.CurrentDateTime'), 'yyyy') + ';' +
+       format($prop('DataCorePlugin.CurrentDateTime'), 'MM') + ';' +
+       format($prop('DataCorePlugin.CurrentDateTime'), 'dd') + ';' +
+       format($prop('DataCorePlugin.CurrentDateTime'), 'HH') + ';' +
+       format($prop('DataCorePlugin.CurrentDateTime'), 'mm') + ';' +
+       format($prop('DataCorePlugin.CurrentDateTime'), 'ss') + '\n';
